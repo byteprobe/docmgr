@@ -234,8 +234,15 @@ func (c *DoctorCommand) RunIntoGlazeProcessor(
 		}
 	}
 
-	// Load vocabulary for validation (best-effort)
-	vocab, _ := LoadVocabulary()
+	// Load vocabulary for validation. Invalid vocabulary is a workspace problem,
+	// but it should surface as a normal command error rather than a panic.
+	vocab, err := LoadVocabulary()
+	if err != nil {
+		return fmt.Errorf("failed to load vocabulary: %w", err)
+	}
+	if vocab == nil {
+		return fmt.Errorf("failed to load vocabulary: vocabulary is nil")
+	}
 	topicSet := map[string]struct{}{}
 	topicList := make([]string, 0, len(vocab.Topics))
 	for _, it := range vocab.Topics {
