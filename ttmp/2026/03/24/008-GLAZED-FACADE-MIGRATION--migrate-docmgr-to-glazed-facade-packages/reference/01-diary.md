@@ -15,15 +15,26 @@ RelatedFiles:
     - Path: ../../../../../../../glazed/pkg/doc/tutorials/migrating-to-facade-packages.md
       Note: Reference used to derive the task breakdown
     - Path: cmd/docmgr/cmds/common/common.go
-      Note: First shared migration target
+      Note: |-
+        First shared migration target
+        Shared builder migrated to Glazed sections and short-help sections (commit 05fee54fe603d5048e711f19be3b1054cf34ed7e)
     - Path: pkg/commands/add.go
       Note: Baseline compile failure originates here
+    - Path: pkg/commands/doctor.go
+      Note: Representative Glaze command after values.DecodeSectionInto migration (commit 05fee54fe603d5048e711f19be3b1054cf34ed7e)
+    - Path: pkg/commands/template_validate.go
+      Note: Template validate normalized back to bare-command execution (commit 05fee54fe603d5048e711f19be3b1054cf34ed7e)
+    - Path: scenariolog/cmd/scenariolog/glazed_cmds.go
+      Note: Scenariolog Glaze commands migrated to sections/values APIs (commit 05fee54fe603d5048e711f19be3b1054cf34ed7e)
+    - Path: scenariolog/cmd/scenariolog/glazed_runtime_bare_cmds.go
+      Note: Scenariolog bare commands migrated to values-based decoding (commit 05fee54fe603d5048e711f19be3b1054cf34ed7e)
 ExternalSources: []
 Summary: ""
 LastUpdated: 2026-03-24T21:55:59.020132324-04:00
 WhatFor: ""
 WhenToUse: ""
 ---
+
 
 
 # Diary
@@ -97,3 +108,87 @@ pkg/commands/add.go:18:2: no required module provides package github.com/go-go-g
 - Ticket ID: `008-GLAZED-FACADE-MIGRATION`
 - Ticket path: `ttmp/2026/03/24/008-GLAZED-FACADE-MIGRATION--migrate-docmgr-to-glazed-facade-packages`
 - Baseline compile failure surfaces first in `pkg/commands/add.go`, but the import inventory shows the legacy packages are referenced throughout `pkg/commands`, `cmd/docmgr/cmds/common`, and `scenariolog`.
+
+## Step 2: Migrate docmgr to the facade packages
+
+The second step was the actual code migration. I converted the command layer from the removed `layers` and `parameters` packages to the current `schema`, `fields`, and `values` APIs, then used the compiler to catch the places where the migration was not purely mechanical. The broadest change was keeping the command definitions intact while swapping the Glazed plumbing underneath them.
+
+The migration ended up being smaller than it first looked because the new Glazed runtime still accepts `RunIntoGlazeProcessor(..., *values.Values, middlewares.Processor)` and `BareCommand.Run(..., *values.Values)`. That meant most files could be updated by changing field builders, default-section decoding, and shared Cobra wiring instead of redesigning every command from scratch.
+
+### Prompt Context
+
+**User prompt (verbatim):** (see Step 1)
+
+**Assistant interpretation:** Finish the facade-package migration in focused commits, validate it thoroughly, and capture the implementation details in the ticket diary.
+
+**Inferred user intent:** Get `docmgr` back to a healthy, current Glazed integration without leaving the repository in a half-migrated state.
+
+**Commit (code):** 05fee54fe603d5048e711f19be3b1054cf34ed7e — "Migrate docmgr to Glazed facade APIs"
+
+### What I did
+- Ran a broad mechanical migration pass across `pkg/commands`, `cmd/docmgr/cmds/common`, and `scenariolog`.
+- Replaced `glazed.parameter` struct tags with `glazed`.
+- Replaced `parameters.NewParameterDefinition(...)` and related type/option helpers with `fields.New(...)`, `fields.Type...`, and `fields.With...`.
+- Replaced `layers.DefaultSlug` and `ParsedLayers.InitializeStruct(...)` usage with `schema.DefaultSlug` and `values.Values.DecodeSectionInto(...)`.
+- Hand-patched `cmd/docmgr/cmds/common/common.go` to switch from `settings.NewGlazedParameterLayers(...)` to `settings.NewGlazedSection(...)` and from short-help layers to short-help sections.
+- Updated `scenariolog` helpers to use `cmds.WithSections(...)`, `cli.NewCommandSettingsSection()`, and the new Glazed section constructors.
+- Used `goimports -w` on all changed Go files.
+- Ran `go test ./...` until the workspace was green, then let the pre-commit hook rerun both tests and `golangci-lint`.
+
+### Why
+- The breakage was repository-wide and mostly followed repeatable API substitutions, so a mechanical first pass was the fastest way to expose the genuinely tricky cases.
+- The shared builder needed a manual fix because it controls how most commands get the Glazed output section and parser configuration.
+
+### What worked
+- The new Glazed APIs lined up well with the existing command shapes once the default section and builder helpers were updated.
+- `goimports` cleaned up the broad edit set without additional manual import work.
+- After the final hand fixes, `go test ./...` passed in the repo and the pre-commit hook also passed `golangci-lint`.
+
+### What didn't work
+- The first post-migration compile pass still had three stale variable references:
+
+```text
+pkg/commands/doctor.go:1224:41: undefined: parsedLayers
+pkg/commands/relate.go:735:41: undefined: parsedLayers
+pkg/commands/template_validate.go:170:20: undefined: parsedLayers
+```
+
+- `template validate` still had a mismatched method shape after the mechanical rewrite:
+
+```text
+pkg/commands/template_validate.go:170:20: not enough arguments in call to c.Run
+        have (context.Context, *values.Values)
+        want (context.Context, *values.Values, middlewares.Processor)
+```
+
+- The first commit attempt failed because of a transient worktree lock:
+
+```text
+fatal: Unable to create '/home/manuel/code/wesen/corporate-headquarters/docmgr/.git/worktrees/docmgr4/index.lock': File exists.
+```
+
+### What I learned
+- The Glazed facade migration in this repo was mostly a command-definition and values-decoding migration, not a redesign of the command execution model.
+- `common.BuildCommand` and the two `scenariolog` command files were the main special cases; the rest of `pkg/commands` followed a consistent pattern.
+
+### What was tricky to build
+- The shared builder needed a real semantic update, not just renames: the code had to stop mutating `desc.Layers` and instead register the default JSON-output Glazed section in `desc.Schema` while also switching parser help settings from layers to sections.
+- `template_validate.go` had drifted into a hybrid shape where the bare-command `Run` method still carried a processor argument. The compiler only exposed that once the other migration noise was removed.
+- The failed commit due to the worktree lock looked like a repository problem at first, but the lock file was already gone by the time I inspected it, so the correct move was to retry rather than repair the worktree aggressively.
+
+### What warrants a second pair of eyes
+- The mechanical tag rewrite from `glazed.parameter` to `glazed` is broad and worth scanning in review, even though the test suite passed.
+- Contributor-facing markdown examples under `pkg/doc` and `CONTRIBUTING.md` still likely mention the removed legacy packages.
+
+### What should be done in the future
+- Update the prose/docs examples that still teach `layers` and `parameters` usage so they match the migrated codebase.
+
+### Code review instructions
+- Start with `cmd/docmgr/cmds/common/common.go`, then sample `pkg/commands/add.go` and `pkg/commands/doctor.go` to confirm the new default-section decoding pattern.
+- Check `scenariolog/cmd/scenariolog/glazed_cmds.go` and `scenariolog/cmd/scenariolog/glazed_runtime_bare_cmds.go` to verify the same migration was applied outside the main CLI.
+- Validate with `go test ./...` from `/home/manuel/workspaces/2026-03-24/fix-docmgr-doctor/docmgr`.
+
+### Technical details
+- Code migration commit: `05fee54fe603d5048e711f19be3b1054cf34ed7e`
+- Validation before commit: `go test ./...`
+- Validation during commit hook: `go test ./...` and `golangci-lint run -v`
